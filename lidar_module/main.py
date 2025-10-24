@@ -1,4 +1,15 @@
-import serial
+try:
+    import serial
+except ImportError:
+    raise ImportError("Module 'serial' (pyserial) not found. Activate the project venv or install pyserial:\n" \
+                      "  .\\.venv\\Scripts\\Activate.ps1\n" \
+                      "  python -m pip install pyserial")
+
+# Ensure the imported package provides the Serial class (detect conflicting 'serial' packages)
+if not hasattr(serial, 'Serial'):
+    raise ImportError("Imported 'serial' package does not expose 'Serial'.\n" \
+                      "A conflicting package named 'serial' may be installed.\n" \
+                      "Fix: pip uninstall serial && pip install --force-reinstall pyserial")
 from CalcLidarData import CalcLidarData
 import matplotlib.pyplot as plt
 import math
@@ -19,7 +30,7 @@ ax.set_title('Lidar LD19 (exit: Key E)',fontsize=18)
 FOV_DEG = 120
 
 # Serial port for connection
-com_port = "/dev/tty.usbserial-0001"
+com_port = "COM4"
 
 # Create an event for pyplot
 # 'key_press_event': event when a key is pressed
@@ -34,6 +45,7 @@ ser = serial.Serial(port=com_port,
                     bytesize=8,
                     parity='N',
                     stopbits=1)
+
 
 tmpString = ""
 lines = list()
