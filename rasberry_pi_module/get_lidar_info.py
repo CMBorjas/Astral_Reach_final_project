@@ -2,30 +2,25 @@ import serial
 from CalcLidarData import CalcLidarData
 import matplotlib.pyplot as plt
 import math
-import time
 
-# Tạo 1 figure với pyplot của matplotlib
-# Figure có thể hiểu là 1 canvas, trên đó ta có thể vẽ nhiều biểu đồ
+
+# Create a figure with matplotlib's pyplot
+# Figure can be understood as a canvas, on which we can use to draw many charts
 fig = plt.figure(figsize=(1,1))
-com_port = "/dev/tty.usbserial-0001"
-
 
 
 # Create a subplot on the Figure
 # At coordinates 111, i.e. (1, 1) and has index = 1 on the figure
 # Polar coordinate system, circular, often used in radar maps
 ax = fig.add_subplot(111, projection='polar')
-
-# Put 0° at 'N' (up) and make angles increase clockwise
-ax.set_theta_zero_location('N')
-ax.set_theta_direction(-1)
-
 # Title for the chart
-ax.set_title('Lidar LD19 (exit: Key E)', fontsize=18)
+ax.set_title('Lidar LD19 (exit: Key E)',fontsize=18)
 
 # Field of view to display (degrees). Set to 120 for a 120° vision cone.
-FOV_DEG = 360
+FOV_DEG = 120
 
+# Serial port for connection
+com_port = "/dev/tty.usbserial-0001"
 
 # Create an event for pyplot
 # 'key_press_event': event when a key is pressed
@@ -59,10 +54,11 @@ while True:
         # Draw scatter plot (point chart)
             # Often represents the correlation between 2 values, here is angle + distance
             # c: color, s: size of points
-        # print(len(angles))
+        print(len(angles))
         line = ax.scatter(angles, distances, c="blue", s=5)
+        ax.set_theta_offset(math.pi / 2)
         ax.set_ylim(0, 1.0)
-        plt.pause(0.001)
+        plt.pause(0.01)
         angles.clear()
         distances.clear()
 
@@ -103,16 +99,15 @@ while True:
                     distances.append(dist)
 
             # Debug prints (degrees and distances). Prints the filtered values.
-            # print("Filtered Angles (deg):", [d for d in lidarData.Degree_angle if abs(((d - 0 + 180) % 360) - 180) <= (FOV_DEG / 2.0)])
-            # print("Filtered Distances:", distances[-12:])
-            # print("angles: ",angles)
-            # print("distance: ",distances)
+            print("Filtered Angles (deg):", [d for d in lidarData.Degree_angle if abs(((d - 0 + 180) % 360) - 180) <= (FOV_DEG / 2.0)])
+            print("Filtered Distances:", distances[-12:])
+
+            #print(distances)
 
             tmpString = ""
             loopFlag = False
         else:
             tmpString += b.hex()+ " "
-
 
         flag2c = False
 

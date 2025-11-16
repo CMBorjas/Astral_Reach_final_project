@@ -2,15 +2,19 @@
 # Copyright (c) 2020 Henrik Blidh
 # Copyright (c) 2022-2023 The Pybricks Authors
 
-
 import asyncio
-import aioconsole
+# import aioconsole   # not used at the moment
 import sys
 from contextlib import suppress
 from bleak import BleakScanner, BleakClient
 import numpy as np
+import Ar2Pi
+import get_lidar_info
 
 direction = ['f','b','r','l']
+Arduino_port = "/dev/tty.usbmodem1101"
+port = "/dev/tty.usbserial-0001"
+arduino = Ar2Pi.ArduinoReader(Arduino_port)
 
 PYBRICKS_COMMAND_EVENT_CHAR_UUID = "c5f50002-8280-46da-89f4-6d8051e4aeef"
 
@@ -24,77 +28,151 @@ async def main():
 
     def handle_disconnect(_):
         print("Hub was disconnected.")
-
-        # If the hub disconnects before this program is done,
-        # cancel this program so it doesn't get stuck waiting forever.
         if not main_task.done():
             main_task.cancel()
 
     ready_event = asyncio.Event()
 
     def handle_rx(_, data: bytearray):
-        if data[0] == 0x01:  
-            payload = data[1:]
+        # Defensive: ignore empty notifications
+        if not data:
+            return
 
+        if data[0] == 0x01:
+            payload = data[1:]
             if payload == b"rdy":
+                # Hub says it's ready for the next command
                 ready_event.set()
             else:
                 print("Received:", payload)
+        else:
+            # Helpful debug if something odd comes back
+            print("RX (no 0x01 header):", data)
 
-    # Do a Bluetooth scan to find the hub.
-    print(f'Try to Find Device: {HUB_NAME}')
-    device = await BleakScanner.find_device_by_name(HUB_NAME)
+    # ---------- BLE SCAN ----------
+    print(f"Try to find device: {HUB_NAME}")
 
-    if device is None:
-        print(f"could not find hub with name: {HUB_NAME}")
-        return
+    device = None
+    while device is None:
+        device = await BleakScanner.find_device_by_name(HUB_NAME)
 
-    # Connect to the hub.
+        if device is None:
+            print(f"Hub '{HUB_NAME}' not found. Retrying...")
+            await asyncio.sleep(1)  # prevent busy-loop scanning
+
+    print(f"Found hub: {device}")
+
+    # ---------- CONNECT ----------
     async with BleakClient(device, handle_disconnect) as client:
 
-        # Shorthand for sending some data to the hub.
-        async def send(data):
+        # ---- Serial / sensor helpers ----
+        async def get_sensor_data(arduino):
+            try:
+                return await asyncio.wait_for(
+                    asyncio.to_thread(arduino.get_arduino),
+                    timeout=1
+                )
+            except asyncio.TimeoutError:
+                return -1
+            except Exception as e:
+                print(f"[Sensor] error: {e!r}")
+                return -1
+
+        async def flush_sensor_buffer(duration: float = 1.0):
+            """
+            Drain the Arduino serial buffer for `duration` seconds,
+            so we don't start with 20 seconds of stale readings.
+            """
+            print(f"[Sensor] Flushing sensor buffer for {duration} s...")
+            loop = asyncio.get_running_loop()
+            end = loop.time() + duration
+            while loop.time() < end:
+                await get_sensor_data(arduino)
+                # Don’t spam the port too hard
+                await asyncio.sleep(0.01)
+            print("[Sensor] Flush done, starting with fresh data.")
+
+        # ---- BLE send helper ----
+        async def send(data: bytes):
+            """
+            Send 4-byte ASCII command to hub stdin, waiting for 'rdy' first.
+            """
             print("Debug 1 before ready_event.wait()")
-            # Wait for hub to say that it is ready to receive data.
-            await ready_event.wait()
+            await ready_event.wait()     # wait until hub says 'rdy'
             print("Debug 2")
-            # Prepare for the next ready event.
             ready_event.clear()
-            # Send the data to the hub.
+
             await client.write_gatt_char(
                 PYBRICKS_COMMAND_EVENT_CHAR_UUID,
                 b"\x06" + data,  # prepend "write stdin" command (0x06)
                 response=True
             )
 
-        async def ainput(string: str) -> str:
-            await asyncio.to_thread(sys.stdout.write, f'{string} ')
-            return (await asyncio.to_thread(sys.stdin.readline)).rstrip('\n')
-
-        # Subscribe to notifications from the hub.
         await client.start_notify(PYBRICKS_COMMAND_EVENT_CHAR_UUID, handle_rx)
 
         # Tell user to start program on the hub.
         print("Start the program on the hub now with the button.")
 
+        # 🔴 Wait for the FIRST 'rdy' so we know hub program is running.
+        print("Waiting for first 'rdy' from hub...")
+        await ready_event.wait()
+        # DO NOT clear here: let the first send() consume it.
+        print("Got first 'rdy' from hub.")
+
+        # 🔴 Flush old Arduino readings so we don't act on queued data.
+        await flush_sensor_buffer(duration=1.0)
 
         random_number = np.random.randint(0, 4)
-        inp = direction[random_number]+'050'
-        # inp = await aioconsole.ainput('Type your command ? ')
-        
-        while (inp != "bye"):
-            print("Command before send: '{inp}'".format(inp=inp), type(inp))
-            await send(bytes(inp, encoding='utf-8'))
-            print("Command after send: '{inp}'".format(inp=inp))
-            await asyncio.sleep(1)
-            print(".", end="", flush=True)
-            random_number = np.random.randint(0, 4)
-            random_power = str(np.random.randint(25, 100)).zfill(3)
-            
-            
-            inp = direction[random_number]+ "100"
-            # inp = await aioconsole.ainput('2 Type your command ')
+        inp = direction[random_number] + '050'
 
+        while inp != "bye":
+            # Read raw sensor value
+            raw = await get_sensor_data(arduino)
+            print("[LiDAR raw]:", raw)
+
+            try:
+                lidar_state = int(raw)
+            except (TypeError, ValueError):
+                lidar_state = -1
+
+            print("[LiDAR int]:", lidar_state)
+
+            if lidar_state == 1:
+                inp = 'f' + "000"
+                print("Command before send: '{inp}'".format(inp=inp), type(inp))
+                await send(inp.encode('utf-8'))
+                print("Command after send: '{inp}'".format(inp=inp))
+                await asyncio.sleep(0.02)
+
+                random_number = np.random.randint(0, 4)
+                random_power = str(np.random.randint(25, 100)).zfill(3)
+
+            elif lidar_state == 0:
+                inp = direction[random_number] + "100"
+                print("Command before send: '{inp}'".format(inp=inp), type(inp))
+                await send(inp.encode('utf-8'))
+                print("Command after send: '{inp}'".format(inp=inp))
+                await asyncio.sleep(0.02)
+                print(".", end="", flush=True)
+                random_number = np.random.randint(0, 4)
+                random_power = str(np.random.randint(25, 100)).zfill(3)
+
+            elif lidar_state == -1:
+                # timeout/error: just wait, don't send
+                inp = direction[random_number] + "000"
+                print("Command before send (no send): '{inp}'".format(inp=inp), type(inp))
+                print("Command after send (no send): '{inp}'".format(inp=inp))
+                await asyncio.sleep(0.02)
+
+            else:
+                # some other state: drive forward at 100
+                inp = "f" + "100"
+                print("Command before send: '{inp}'".format(inp=inp), type(inp))
+                await send(inp.encode('utf-8'))
+                print("Command after send: '{inp}'".format(inp=inp))
+                await asyncio.sleep(0.02)
+                print(".", end="", flush=True)
+                random_number = np.random.randint(0, 4)
 
         # Send a message to indicate stop.
         await send(b"bye")
