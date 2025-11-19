@@ -1,0 +1,18 @@
+# Consolidated Python dependencies for Astral Reach project
+# - Base / LiDAR pinned versions (from `lidar_module/requirements.txt`)
+# - Added packages used by Raspberry Pi module (`bleak`, `aioconsole`)
+
+cycler==0.10.0
+kiwisolver==1.3.1
+matplotlib==3.3.4
+numpy==1.20.1
+Pillow==8.1.2
+pyparsing==2.4.7
+pyserial==3.5
+python-dateutil==2.8.1
+six==1.15.0
+
+# Async BLE and console packages used in `rasberry_pi_module`
+bleak
+aioconsole
+

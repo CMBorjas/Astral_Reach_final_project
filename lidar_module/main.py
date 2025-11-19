@@ -3,25 +3,25 @@ from CalcLidarData import CalcLidarData
 import matplotlib.pyplot as plt
 import math
 
-# Tạo 1 figure với pyplot của matplotlib
-# Figure có thể hiểu là 1 canvas, trên đó ta có thể vẽ nhiều biểu đồ
+# Create a Figure using matplotlib.pyplot
+# A Figure is like a canvas where you can draw multiple plots
 fig = plt.figure(figsize=(1,1))
 
 
-# Tạo 1 biểu đồ trên Figure
-  # Tại tọa độ 111, tức (1, 1) và mang index = 1 trên figure
-  # Hệ tọa độ polar, hình tròn, thường dùng trong các bản đồ radar
+# Create a plot on the Figure
+# Subplot 111: i.e., a (1, 1) grid with index = 1 on the figure
+# Polar coordinate system, commonly used for radar / circular plots
 ax = fig.add_subplot(111, projection='polar')
-# Title cho biểu đồ
-ax.set_title('Lidar LD19 (exit: Key E)',fontsize=18)
+# Title for the plot
+ax.set_title('Lidar LD19 (exit: Key E)', fontsize=18)
 
-# Com port kết nối serial
+# COM port for serial connection
 com_port = "/dev/tty.usbserial-0001"
 
-# Tạo 1 event cho pyplot
-  # 'key_press_event': event nhấn 1 key
-  # 1 hàm đc trigger cùng event
-  # Press E to exit
+# Create an event for pyplot
+# 'key_press_event': event when a key is pressed
+# One function is triggered by the event
+# Press E to exit
 plt.connect('key_press_event', lambda event: exit(1) if event.key == 'e' else None)
 
 
@@ -46,9 +46,9 @@ while True:
         if ('line' in locals()):
             line.remove()
 
-        # Vẽ biểu đồ scatter (biểu đồ dạng điểm)
-            # Thường biểu diễn tương quan giữa 2 giá trị, ở đây là góc + khoảng cách
-            # c: color, s: size of points
+        # Draw scatter plot (point plot)
+        # Typically represents the relationship between two values; here angle + distance
+        # c: color, s: size of points
         print(len(angles))
         line = ax.scatter(angles, distances, c="blue", s=5)
         ax.set_theta_offset(math.pi / 2)
