@@ -2,21 +2,127 @@
 # Copyright (c) 2020 Henrik Blidh
 # Copyright (c) 2022-2023 The Pybricks Authors
 
-
 import asyncio
-import aioconsole
-import sys
+import time
 from contextlib import suppress
-from bleak import BleakScanner, BleakClient
-import numpy as np
+from typing import Optional, Tuple
 
-direction = ['f','b','r','l']
+from bleak import BleakClient, BleakScanner
+import serial
+from serial import SerialException
 
 PYBRICKS_COMMAND_EVENT_CHAR_UUID = "c5f50002-8280-46da-89f4-6d8051e4aeef"
-
-# Replace this with the name of your hub if you changed
-# it when installing the Pybricks firmware. 
 HUB_NAME = "Pybricks Hub"
+
+SERIAL_PORT = "/dev/tty.usbmodem1101"  # <-- change to your actual COM/tty port
+SERIAL_BAUDRATE = 9600
+SERIAL_TIMEOUT = 1
+SERIAL_SAMPLE_SIZE = 10
+
+CLOSE_DISTANCE_CM = 10
+FAR_DISTANCE_CM = 500
+
+
+def most_common(values):
+    return max(set(values), key=values.count) if values else None
+
+
+def format_drive_command(direction: str, power: int) -> str:
+    clamped = max(0, min(power, 100))
+    return f"{direction}{clamped:03d}"
+
+
+class ArduinoBridge:
+    def __init__(self, port: str, baudrate: int, timeout: float, sample_size: int):
+        self.serial = serial.Serial(port, baudrate, timeout=timeout)
+        self.sample_size = sample_size
+
+    def close(self) -> None:
+        if self.serial and self.serial.is_open:
+            self.serial.close()
+
+    def poll_command(self) -> Optional[Tuple[int, str]]:
+        readings = self._collect_samples()
+        if not readings:
+            return None
+
+        sample = most_common(readings)
+        if sample is None:
+            return None
+
+        try:
+            distance = int(float(sample))
+        except ValueError:
+            return None
+
+        self._update_led(distance)
+        return distance, self._distance_to_command(distance)
+
+    def _collect_samples(self):
+        values = []
+        for _ in range(self.sample_size):
+            raw = self.serial.readline().decode(errors="ignore").strip()
+            if raw:
+                values.append(raw)
+        return values
+
+    def _update_led(self, distance: int) -> None:
+        if distance < CLOSE_DISTANCE_CM:
+            self._write("ON")
+        elif distance > FAR_DISTANCE_CM:
+            self._write("ON")
+            time.sleep(0.1)
+            self._write("OFF")
+        else:
+            self._write("OFF")
+
+    def _distance_to_command(self, distance: int) -> str:
+        if distance < CLOSE_DISTANCE_CM:
+            return format_drive_command("b", 50)
+        if distance > FAR_DISTANCE_CM:
+            return format_drive_command("f", 100)
+        return format_drive_command("f", 50)
+
+    def _write(self, payload: str) -> None:
+        self.serial.write((payload + "\n").encode())
+
+
+async def drive_with_arduino(send):
+    try:
+        bridge = ArduinoBridge(
+            SERIAL_PORT,
+            SERIAL_BAUDRATE,
+            SERIAL_TIMEOUT,
+            SERIAL_SAMPLE_SIZE,
+        )
+    except SerialException as exc:
+        print(f"Unable to open serial port {SERIAL_PORT}: {exc}")
+        return
+
+    try:
+        while True:
+            try:
+                result = await asyncio.to_thread(bridge.poll_command)
+            except SerialException as exc:
+                print(f"Serial connection error: {exc}")
+                break
+
+            if not result:
+                continue
+
+            distance, command = result
+            if not command:
+                continue
+
+            print(f"Distance {distance} cm -> '{command}'")
+
+            try:
+                await send(command.encode("utf-8"))
+            except Exception as exc:
+                print(f"Failed to send '{command}' to hub: {exc}")
+                await asyncio.sleep(0.5)
+    finally:
+        bridge.close()
 
 
 async def main():
@@ -24,84 +130,63 @@ async def main():
 
     def handle_disconnect(_):
         print("Hub was disconnected.")
-
-        # If the hub disconnects before this program is done,
-        # cancel this program so it doesn't get stuck waiting forever.
         if not main_task.done():
             main_task.cancel()
 
     ready_event = asyncio.Event()
 
     def handle_rx(_, data: bytearray):
-        if data[0] == 0x01:  
-            payload = data[1:]
+        if not data:
+            return
 
+        if data[0] == 0x01:
+            payload = data[1:]
             if payload == b"rdy":
                 ready_event.set()
             else:
-                print("Received:", payload)
+                try:
+                    message = payload.decode()
+                except UnicodeDecodeError:
+                    message = repr(payload)
+                print("Received:", message)
 
-    # Do a Bluetooth scan to find the hub.
-    print(f'Try to Find Device: {HUB_NAME}')
+    print(f"Try to Find Device: {HUB_NAME}")
     device = await BleakScanner.find_device_by_name(HUB_NAME)
 
     if device is None:
         print(f"could not find hub with name: {HUB_NAME}")
         return
 
-    # Connect to the hub.
     async with BleakClient(device, handle_disconnect) as client:
 
-        # Shorthand for sending some data to the hub.
-        async def send(data):
-            print("Debug 1 before ready_event.wait()")
-            # Wait for hub to say that it is ready to receive data.
-            await ready_event.wait()
-            print("Debug 2")
-            # Prepare for the next ready event.
-            ready_event.clear()
-            # Send the data to the hub.
+        async def send(data: bytes, *, wait_for_ready: bool = True):
+            if wait_for_ready:
+                await ready_event.wait()
+                ready_event.clear()
+
             await client.write_gatt_char(
                 PYBRICKS_COMMAND_EVENT_CHAR_UUID,
-                b"\x06" + data,  # prepend "write stdin" command (0x06)
-                response=True
+                b"\x06" + data,
+                response=True,
             )
 
-        async def ainput(string: str) -> str:
-            await asyncio.to_thread(sys.stdout.write, f'{string} ')
-            return (await asyncio.to_thread(sys.stdin.readline)).rstrip('\n')
-
-        # Subscribe to notifications from the hub.
         await client.start_notify(PYBRICKS_COMMAND_EVENT_CHAR_UUID, handle_rx)
-
-        # Tell user to start program on the hub.
         print("Start the program on the hub now with the button.")
 
+        sensor_task = asyncio.create_task(drive_with_arduino(send))
 
-        random_number = np.random.randint(0, 4)
-        inp = direction[random_number]+'050'
-        # inp = await aioconsole.ainput('Type your command ? ')
-        
-        while (inp != "bye"):
-            print("Command before send: '{inp}'".format(inp=inp), type(inp))
-            await send(bytes(inp, encoding='utf-8'))
-            print("Command after send: '{inp}'".format(inp=inp))
-            await asyncio.sleep(1)
-            print(".", end="", flush=True)
-            random_number = np.random.randint(0, 4)
-            random_power = str(np.random.randint(25, 100)).zfill(3)
-            
-            
-            inp = direction[random_number]+ "100"
-            # inp = await aioconsole.ainput('2 Type your command ')
+        try:
+            await sensor_task
+        except asyncio.CancelledError:
+            pass
+        finally:
+            sensor_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await sensor_task
+            with suppress(Exception):
+                await send(b"bye", wait_for_ready=False)
 
 
-        # Send a message to indicate stop.
-        await send(b"bye")
-
-    # Hub disconnects here when async with block exits.
-
-# Run the main async program.
 if __name__ == "__main__":
     with suppress(asyncio.CancelledError):
         asyncio.run(main())
