@@ -17,7 +17,7 @@ ax = fig.add_subplot(111, projection='polar')
 ax.set_title('Lidar LD19 (exit: Key E)',fontsize=18)
 
 # Field of view to display (degrees). Set to 120 for a 120° vision cone.
-FOV_DEG = 120
+FOV_DEG = 180
 
 # Serial port for connection
 com_port = "/dev/tty.usbserial-0001"
@@ -58,6 +58,7 @@ while True:
         line = ax.scatter(angles, distances, c="blue", s=5)
         ax.set_theta_offset(math.pi / 2)
         ax.set_ylim(0, 1.0)
+        ax.set_theta_direction(-1)
         plt.pause(0.01)
         angles.clear()
         distances.clear()
